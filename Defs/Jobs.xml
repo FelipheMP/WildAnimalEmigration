@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Defs>
+  <!-- RimWorld saves this job by its defName. Keep the name stable across releases. -->
+  <JobDef>
+    <defName>WildAnimalEmigration_Leave</defName>
+    <driverClass>WildAnimalEmigration.DepartureJob</driverClass>
+    <reportString>emigrating.</reportString>
+  </JobDef>
+</Defs>

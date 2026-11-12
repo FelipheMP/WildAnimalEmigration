@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>WildAnimalEmigration</AssemblyName>
+    <Version>1.2.1</Version>
+    <OutputPath>../Assemblies/</OutputPath>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <DebugType>none</DebugType>
+    <GenerateDependencyFile>false</GenerateDependencyFile>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <RimWorldDir Condition="'$(RimWorldDir)' == ''">$(RIMWORLD_DIR)</RimWorldDir>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="Assembly-CSharp" HintPath="$(RimWorldDir)/Assembly-CSharp.dll" Private="false" />
+    <Reference Include="UnityStubs" HintPath="$(RimWorldDir)/UnityStubs.dll" Private="false" />
+    <Reference Include="Waylith.UnityCompat" HintPath="$(RimWorldDir)/Waylith.UnityCompat.dll" Private="false" />
+  </ItemGroup>
+  <Target Name="CheckRimWorldDirectory" BeforeTargets="ResolveAssemblyReferences">
+    <Error Condition="!Exists('$(RimWorldDir)/Assembly-CSharp.dll')"
+           Text="Set RIMWORLD_DIR to your RimWorld 1.7 installation folder (the one with Assembly-CSharp.dll)." />
+  </Target>
+</Project>

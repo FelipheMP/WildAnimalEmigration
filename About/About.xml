@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ModMetaData>
+  <name>Wild Animal Emigration</name>
+  <author>FelipheMP</author>
+  <packageId>feliphemp.wildanimalemigration</packageId>
+  <modVersion>1.2.1</modVersion>
+  <supportedVersions>
+    <li>1.7</li>
+  </supportedVersions>
+  <description>When a wild species becomes overcrowded on a colony map, surplus animals walk off the map. The default is to start above ten and aim to leave nine.</description>
+</ModMetaData>
