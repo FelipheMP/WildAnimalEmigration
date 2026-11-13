@@ -3,6 +3,7 @@
   <name>Wild Animal Emigration</name>
   <author>FelipheMP</author>
   <packageId>feliphemp.wildanimalemigration</packageId>
+  <url>https://github.com/feliphemp/WildAnimalEmigration</url>
   <modVersion>1.2.1</modVersion>
   <supportedVersions>
     <li>1.7</li>
