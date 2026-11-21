@@ -24,11 +24,19 @@ A RimWorld 1.7 mod that lets surplus wild animals walk off your colony map. Ever
 ### Mod settings
 
 - **Batch size per species** defaults to 4. Set it to 10 to allow up to ten animals of a species to be queued or walking out at the same time.
-- **Send all eligible surplus animals at once** removes the batch limit. If there are 30 wild monkeys and the target is 9, one check can start up to 21 departures. The normal eligibility and population checks still apply.
+- **Send all eligible surplus animals at once** removes the batch limit. If there are 30 wild monkeys and the target is 9, one check can start up to 21 departures. The normal eligibility and population checks still apply. Scheduling is spread across ticks, with at most one candidate route search per tick on each colony map. Large checks take time to finish, and the manual completion message appears after scheduling finishes.
 - **Hours between automatic checks** defaults to 24. Enter 10 for ten in-game hours or 48 for two days. The game remembers when each colony was last checked across save and reload. **Check this colony now** runs on the next game tick and restarts that colony's countdown. Previously saved custom intervals still apply.
 - **Allow babies and juveniles to emigrate** lets young animals that can walk join departures. **Allow mothers with young on this map to emigrate** lifts the separate protection for mothers. Both boxes are off by default. Enable both to use the family rules from 1.1.3. The breeding pair is protected in every combination.
 - Turn off **Show emigration and manual check notifications** to silence the mod's top-left messages. When enabled, reports show completed departures and the current wild population for that species. Each animal is counted once per report. RimWorld can still spawn new animals, so the current population can rise even after a group has left.
 - Choose a species and use **Preview departures** to see the active settings, how many animals are already queued or walking, and how many adults are being kept for breeding or parenting. One mother may count in both categories.
+
+## Performance
+
+Population checks run daily by default. During a check, candidate processing is spread across simulation ticks to limit bursts of route searching. The game still performs normal movement and pathfinding for animals that are walking.
+
+Breeding adults are selected in a single pass. Departure validation reuses temporary storage and reads the current population before starting the walk and before leaving. This keeps hunting, taming, births, and settings changes reflected in the final decision. An unfinished population check is rebuilt after reloading a save, with existing departure jobs counted.
+
+Version 1.3.0 compiles against the local 1.7 assemblies. Its scheduling changes still need testing and performance measurement in a Windows save, especially during a large departure and save/reload.
 
 ## Read the code in this order
 

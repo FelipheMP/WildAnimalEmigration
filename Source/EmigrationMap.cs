@@ -21,6 +21,13 @@ public sealed class EmigrationMap : MapComponent
 
     private List<ThingDef> activeSpecies = new();
     private readonly Dictionary<int, ThingDef> departures = new();
+    // One candidate is processed per tick, bounding route searches during large checks.
+    private IEnumerator<bool> pendingCheck;
+    private bool checkInProgress;
+    private bool reportCheck;
+    private int scheduledByCheck;
+    private readonly List<Pawn> validationAnimals = new();
+    private readonly HashSet<Pawn> validationProtected = new();
     private bool checkRequested;
     private int lastCheckTick = -1;
     private int reportDeparturesAt;
@@ -33,10 +40,13 @@ public sealed class EmigrationMap : MapComponent
         // RimWorld separately saves each animal's current job and its destination.
         Scribe_Collections.Look(ref activeSpecies, "wildAnimalEmigrationActiveSpecies", LookMode.Def);
         Scribe_Values.Look(ref lastCheckTick, "wildAnimalEmigrationLastCheckTick", -1);
+        Scribe_Values.Look(ref checkInProgress, "wildAnimalEmigrationCheckInProgress", false);
         if (Scribe.mode == LoadSaveMode.PostLoadInit)
         {
             activeSpecies ??= new List<ThingDef>();
             activeSpecies.RemoveAll(species => species == null);
+            // Rebuild unfinished work from live pawns. Existing jobs are counted again.
+            checkRequested = checkInProgress;
         }
     }
 
@@ -50,30 +60,47 @@ public sealed class EmigrationMap : MapComponent
         int tick = Find.TickManager.TicksGame;
         ReportDepartures(tick);
 
-        // Measure from the last check so interval edits take effect on the next tick
-        // and reloading a save preserves the time left before the next check.
-        if (!checkRequested && lastCheckTick >= 0
-            && tick - lastCheckTick < EmigrationMod.Settings.CheckIntervalTicks)
+        if (pendingCheck == null && (checkRequested || lastCheckTick < 0
+            || tick - lastCheckTick >= EmigrationMod.Settings.CheckIntervalTicks))
+        {
+            reportCheck = checkRequested;
+            checkRequested = false;
+            lastCheckTick = tick;
+            scheduledByCheck = 0;
+            checkInProgress = true;
+            pendingCheck = RunCheck().GetEnumerator();
+        }
+
+        if (pendingCheck == null)
             return;
 
-        bool manual = checkRequested;
-        checkRequested = false;
-        lastCheckTick = tick;
+        if (pendingCheck.MoveNext())
+        {
+            if (pendingCheck.Current)
+                scheduledByCheck++;
+            return;
+        }
 
-        // Take a snapshot because starting a job can immediately move or despawn a pawn.
+        pendingCheck.Dispose();
+        pendingCheck = null;
+        checkInProgress = false;
+        if (reportCheck && EmigrationMod.Settings.ShowNotifications)
+        {
+            Messages.Message($"Wildlife check complete. Scheduled {scheduledByCheck} departures across all species.",
+                MessageTypeDefOf.NeutralEvent, historical: false);
+        }
+    }
+
+    private IEnumerable<bool> RunCheck()
+    {
+        // Snapshot membership before jobs can move or despawn pawns.
         var groups = map.mapPawns.AllPawnsSpawned.Where(IsResidentWildAnimal).ToLookup(pawn => pawn.def);
         activeSpecies.RemoveAll(species => !groups.Contains(species));
-        int started = 0;
-
         foreach (var group in groups)
-            started += CheckSpecies(group.Key, group.ToList());
-
-        if (manual && EmigrationMod.Settings.ShowNotifications)
         {
-            string result = started == 0
-                ? "Wildlife check complete. No new departures could start."
-                : $"Wildlife check complete. Scheduled {started} departures across all species.";
-            Messages.Message(result, MessageTypeDefOf.NeutralEvent, historical: false);
+            foreach (bool scheduled in CheckSpecies(group.Key, group.ToList()))
+                yield return scheduled;
+            yield return false;
         }
     }
 
@@ -106,33 +133,36 @@ public sealed class EmigrationMap : MapComponent
         departures.Clear();
     }
 
-    private int CheckSpecies(ThingDef species, List<Pawn> animals)
+    private IEnumerable<bool> CheckSpecies(ThingDef species, List<Pawn> animals)
     {
         int maximum = EmigrationMod.Settings.MaximumFor(species);
         int target = maximum - 1;
         if (animals.Count <= target)
         {
             activeSpecies.Remove(species);
-            return 0;
+            yield break;
         }
 
         if (!activeSpecies.Contains(species))
         {
             if (animals.Count <= maximum)
-                return 0;
+                yield break;
             activeSpecies.Add(species);
         }
 
         int alreadyLeaving = animals.Count(HasDepartureJob);
         int places = EmigrationMod.Settings.DepartureSlots(animals.Count - target, alreadyLeaving);
         if (places == 0)
-            return 0;
+            yield break;
 
-        var protectedAnimals = ProtectedAnimals(animals, out _, out _);
         int started = 0;
         foreach (Pawn animal in animals)
         {
-            if (!CanSchedule(animal) || protectedAnimals.Contains(animal) || HasDepartureJob(animal))
+            // Yield before each candidate, including rejected ones, so crowded maps
+            // cannot perform hundreds of route searches in one simulation tick.
+            yield return false;
+            if (animal.Map != map || !CanSchedule(animal) || HasDepartureJob(animal)
+                || !CanFinishDeparture(animal))
                 continue;
 
             if (!RCellFinder.TryFindBestExitSpot(animal, out IntVec3 edge, TraverseMode.ByPawn, canBash: false)
@@ -150,10 +180,10 @@ public sealed class EmigrationMap : MapComponent
                 continue;
 
             started++;
+            yield return true;
             if (started == places)
-                break;
+                yield break;
         }
-        return started;
     }
 
     // A factionless animal in a Lord belongs to another AI group, such as a passing herd.
@@ -184,14 +214,17 @@ public sealed class EmigrationMap : MapComponent
         return jobName is null or "Wait" or "Wait_Wander" or "GotoWander";
     }
 
-    private static HashSet<Pawn> ProtectedAnimals(List<Pawn> animals, out int breedingCount, out int motherCount)
+    private static HashSet<Pawn> ProtectedAnimals(List<Pawn> animals, out int breedingCount, out int motherCount, HashSet<Pawn> buffer = null)
     {
-        var protectedAnimals = new HashSet<Pawn>();
+        var protectedAnimals = buffer ?? new HashSet<Pawn>();
+        protectedAnimals.Clear();
         if (!EmigrationMod.Settings.AllowMothers)
         {
             // Protect mothers only while their known young are still residents of this map.
-            foreach (Pawn young in animals.Where(animal => !animal.ageTracker.Adult))
+            foreach (Pawn young in animals)
             {
+                if (young.ageTracker.Adult)
+                    continue;
                 Pawn mother = young.GetMother();
                 if (mother != null)
                     protectedAnimals.Add(mother);
@@ -200,12 +233,30 @@ public sealed class EmigrationMap : MapComponent
         }
         motherCount = protectedAnimals.Count;
 
-        // Keep at most one adult of each sex. Prefer animals that are already staying.
-        var adults = animals.Where(animal => animal.ageTracker.Adult)
-            .OrderByDescending(protectedAnimals.Contains)
-            .ThenBy(HasDepartureJob);
-        Pawn male = adults.FirstOrDefault(animal => animal.gender == Gender.Male);
-        Pawn female = adults.FirstOrDefault(animal => animal.gender == Gender.Female);
+        // Rank adults in one pass. Protected mothers rank first, then animals
+        // without an existing departure job. Equal ranks retain the original order.
+        Pawn male = null;
+        Pawn female = null;
+        int maleRank = int.MaxValue;
+        int femaleRank = int.MaxValue;
+        foreach (Pawn animal in animals)
+        {
+            if (!animal.ageTracker.Adult || (animal.gender != Gender.Male && animal.gender != Gender.Female))
+                continue;
+            int rank = protectedAnimals.Contains(animal) ? 0 : 2;
+            if (HasDepartureJob(animal))
+                rank++;
+            if (animal.gender == Gender.Male && rank < maleRank)
+            {
+                male = animal;
+                maleRank = rank;
+            }
+            if (animal.gender == Gender.Female && rank < femaleRank)
+            {
+                female = animal;
+                femaleRank = rank;
+            }
+        }
         breedingCount = 0;
         if (male != null && female != null)
         {
@@ -246,13 +297,17 @@ public sealed class EmigrationMap : MapComponent
         if (!map.IsPlayerHome || !CanWalkOut(animal))
             return false;
 
-        var animals = map.mapPawns.AllPawnsSpawned
-            .Where(other => other.def == animal.def && IsResidentWildAnimal(other))
-            .ToList();
+        // Reuse storage but rebuild from live pawns. Deaths, births, taming and
+        // changes from other mods can occur even within a tick, so no stale cache.
+        validationAnimals.Clear();
+        foreach (Pawn other in map.mapPawns.AllPawnsSpawned)
+        {
+            if (other.def == animal.def && IsResidentWildAnimal(other))
+                validationAnimals.Add(other);
+        }
         int target = EmigrationMod.Settings.MaximumFor(animal.def) - 1;
-
-        // Births, deaths, taming and settings changes can happen during the walk.
-        return animals.Count > target && !ProtectedAnimals(animals, out _, out _).Contains(animal);
+        return validationAnimals.Count > target
+            && !ProtectedAnimals(validationAnimals, out _, out _, validationProtected).Contains(animal);
     }
 
     internal void RecordDeparture(Pawn animal)
